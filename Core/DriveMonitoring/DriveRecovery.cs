@@ -4,7 +4,8 @@ namespace Lertaro.Core.DriveMonitoring;
 
 internal static class DriveRecovery
 {
-    public static void RestoreOrRebuild(
+    // True once the drive's index is handed over to a monitor, restored or rebuilt.
+    public static bool RestoreOrRebuild(
         UsnIndexer indexer,
         string cacheDir,
         string drive,
@@ -37,7 +38,7 @@ internal static class DriveRecovery
                     TrySaveDriveCache(indexer, cacheDir, new() { (drive, cached.Value.JournalId, nextUsn) }, drive, "USN catch-up");
                     DriveMonitorFactory.EnsureMonitor(indexer, drive, cached.Value.JournalId, nextUsn, token, onReindexRequired, onRemovalRequested, onReindexAfterRemoval);
                     Logger.Log($"[SearchEngine] Restored drive {drive} from cache and USN catch-up.");
-                    return;
+                    return true;
                 }
 
                 // Catch-up failed (journal mismatch/error) -- this cache can't be trusted even as a diff
@@ -60,7 +61,7 @@ internal static class DriveRecovery
             // mounted any more -- a drive parked for re-insertion. See DriveArrivalRecovery for why the
             // last one must not end here.
             DriveArrivalRecovery.SettleFailedBuild(indexer, drive, wasCancelled, token, onReindexRequired);
-            return;
+            return false;
         }
 
         foreach (var (builtDrive, journalId, nextUsn) in metadata)
@@ -72,6 +73,7 @@ internal static class DriveRecovery
         // drive (monitor already stopped above) never sets this flag in the first place.
         if (indexer.ConsumeMissedFolderChangeDuringRebuild(drive))
             onReindexRequired?.Invoke(drive);
+        return true;
     }
 
     private static void TrySaveDriveCache(
