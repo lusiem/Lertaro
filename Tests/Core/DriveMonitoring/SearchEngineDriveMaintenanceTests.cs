@@ -1,5 +1,8 @@
 using Lertaro.Core.DriveMonitoring;
 using Lertaro.Core.Indexer.Usn;
+using Lertaro.Core.IndexV2;
+using Lertaro.Core.IndexV2.Delta;
+using Lertaro.Core.Tests.IndexV2;
 
 namespace Lertaro.Core.Tests.DriveMonitoring;
 
@@ -505,6 +508,90 @@ public sealed class SearchEngineDriveMaintenanceTests
             generation.Cancel();
         }
     }
+
+    // A rebuild of the drive that starts after its index was dropped as unusable is the rebuild the drop asked
+    // for: the flag does not outlive it and let a later, unrelated request skip its backoff.
+    [TestMethod]
+    public void DroppedUnusable_ARebuildThatStartedSince_KeepsTheNextRequestsBackoff()
+    {
+        using var rig = new Rig();
+        var drive = FreeDriveLetter();
+        lock (rig.Indexer.LockObj)
+            rig.Indexer._droppedUnusable.Add(drive);                                // the compactor dropped it
+        Assert.IsTrue(rig.Maintenance.QueueDriveRebuild(drive, forceRebuild: true)); // a rebuild of it ran first
+        rig.Work.Run(0);                                                             // and ended quietly
+
+        rig.Maintenance.QueueDriveRebuild(drive); // a monitor's loss within that rebuild's wait
+
+        Assert.AreEqual(1, rig.Work.Count, "a stale flag skipped the quiet-window backoff");
+    }
+
+    // A drive whose index the idle compactor just dropped as unusable serves nothing, so its rebuild does not
+    // wait out a backoff meant for a drive that keeps losing changes while it serves: a waiting retry, or the
+    // quiet window after its last rebuild. It starts now. (The compactor's side: UsnIndexerDurabilityExtensionsTests.)
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void QueueDriveRebuild_IndexDroppedAsUnusable_IsNotMadeToWaitOutTheBackoff(bool retryWaiting)
+    {
+        using var rig = new Rig();
+        var drive = FreeDriveLetter();
+        if (retryWaiting)
+            ReachWaitingRetry(rig, drive);
+        else
+        {
+            rig.Maintenance.QueueDriveRebuild(drive);
+            rig.Work.Run(0); // ends quietly: a request within its wait would wait
+        }
+        var before = rig.Work.Count;
+        lock (rig.Indexer.LockObj)
+            rig.Indexer._droppedUnusable.Add(drive); // CompactIdleDeltas dropped it
+
+        rig.Maintenance.QueueDriveRebuild(drive); // and asked for its rebuild
+
+        Assert.AreEqual(before + 1, rig.Work.Count, "the drive serves nothing and its rebuild waits");
+        Assert.IsFalse(rig.Maintenance.HasDelayedRebuild(drive));
+    }
+
+    // The same, end to end: the idle compaction that leaves the index unusable, while a retry waits.
+    [TestMethod]
+    public void CompactIdleDeltas_LeftUnusableWhileARetryWaits_RebuildsTheDriveNow()
+    {
+        var drive = MountedDrive();
+        using var rig = new Rig(() => Selecting(drive));
+        ReachWaitingRetryWithoutReadingTheVolume(rig, drive);
+        var cacheDir = Directory.CreateTempSubdirectory("lertaro-tests-").FullName;
+        var fixture = LiveIndexFixture.Build(drive, new[] { LiveIndexFixture.Root() });
+        try
+        {
+            rig.Indexer._recordIndexes[drive] = fixture.Index;
+            rig.Indexer._driveMetadata[drive] = new UsnIndexer.DriveRuntimeMetadata { FileSystemType = "exFAT" };
+            var path = LocalDriveCacheLocator.GetCachePath(cacheDir, drive);
+            AddChurn(fixture.Index, 0);
+            Assert.AreEqual(1, rig.Indexer.CompactIdleDeltas(cacheDir, rig.Maintenance.QueueDriveRebuild), "precondition: the first write lands");
+            File.Delete(path);               // a directory where the cache file was: the write cannot replace it,
+            Directory.CreateDirectory(path); // and the reopen cannot open it
+            AddChurn(fixture.Index, 100_000);
+
+            rig.Indexer.CompactIdleDeltas(cacheDir, rig.Maintenance.QueueDriveRebuild);
+
+            Assert.IsFalse(rig.Indexer._recordIndexes.ContainsKey(drive), "precondition: the unusable index was dropped");
+            Assert.AreEqual(2, rig.Work.Count, "the drive has no index, and its rebuild waits on the retry's backoff");
+            Assert.IsTrue(rig.Maintenance.CancelDriveRebuild(drive)); // so it never reads the volume
+        }
+        finally
+        {
+            rig.Indexer._recordIndexes.Remove(drive);
+            try { fixture.Dispose(); } catch { }
+            try { Directory.Delete(cacheDir, recursive: true); } catch { }
+        }
+    }
+
+    private static void AddChurn(LiveIndex index, int first) => index.Mutate((_, delta) =>
+    {
+        for (var i = first; i < first + UsnIndexerDurabilityExtensions.IdleCompactPendingThreshold; i++)
+            DeltaLinkOps.AddLink(delta, (ulong)(i + 2), 1, $"churn{i}.txt", FileRecordFlags.None);
+    });
 
     // A full rebuild walked the drive afresh, so the wait left by its last per-drive rebuild no longer applies:
     // the first request after the startup (the initializer's own recovery, say) runs at once.

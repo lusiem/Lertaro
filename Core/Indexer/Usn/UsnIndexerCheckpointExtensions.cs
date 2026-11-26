@@ -67,14 +67,12 @@ internal static class UsnIndexerCheckpointExtensions
                 indexer._recordIndexes[drive] = live;
                 stored = true;
 
-                var totals = indexer._recordIndexes.Values.Select(r => r.GetCounts()).ToList();
-                indexer.Status.TotalFiles = totals.Sum(t => t.Files);
-                indexer.Status.TotalDirs = totals.Sum(t => t.Dirs);
+                indexer.UpdateTotalsFromRuntime();
 
                 var item = indexer.Status.Drives.FirstOrDefault(d => d.Drive.Equals(drive, StringComparison.OrdinalIgnoreCase));
                 if (item != null)
                 {
-                    var (files, dirs) = live.GetCounts();
+                    var (files, dirs) = UsnIndexer.CountsOf(live);
                     item.Files = files;
                     item.Dirs = dirs;
                     // item.State intentionally untouched -- stays "indexing".

@@ -55,7 +55,7 @@ public static class UsnIndexerCacheExtensions
             {
                 indexer._driveMetadata[item.Drive] = item.Metadata;
                 indexer._recordIndexes[item.Drive] = item.Live;
-                var (files, dirs) = item.Live.GetCounts();
+                var (files, dirs) = UsnIndexer.CountsOf(item.Live);
                 indexer.Status.TotalFiles += files;
                 indexer.Status.TotalDirs += dirs;
                 indexer.Status.ActiveDrives.Add(item.Drive);
@@ -92,9 +92,7 @@ public static class UsnIndexerCacheExtensions
             if (!indexer.Status.ActiveDrives.Contains(drive, StringComparer.OrdinalIgnoreCase))
                 indexer.Status.ActiveDrives.Add(drive);
 
-            var totals = indexer._recordIndexes.Values.Select(r => r.GetCounts()).ToList();
-            indexer.Status.TotalFiles = totals.Sum(t => t.Files);
-            indexer.Status.TotalDirs = totals.Sum(t => t.Dirs);
+            indexer.UpdateTotalsFromRuntime();
             indexer.Status.State = "ready";
             indexer.Status.Progress = 100;
             indexer.UpdateDriveCounts(drive, markReady: true);
@@ -154,9 +152,7 @@ public static class UsnIndexerCacheExtensions
             if (indexer._recordIndexes.Remove(drive, out var live))
                 live.Dispose();
             indexer.Status.ActiveDrives.RemoveAll(d => d.Equals(drive, StringComparison.OrdinalIgnoreCase));
-            var totals = indexer._recordIndexes.Values.Select(r => r.GetCounts()).ToList();
-            indexer.Status.TotalFiles = totals.Sum(t => t.Files);
-            indexer.Status.TotalDirs = totals.Sum(t => t.Dirs);
+            indexer.UpdateTotalsFromRuntime();
         }
     }
 
@@ -181,17 +177,7 @@ public static class UsnIndexerCacheExtensions
             return null;
         }
 
-        var metadata = new UsnIndexer.DriveRuntimeMetadata
-        {
-            SourceKind = snapshot.SourceKind,
-            IdKind = snapshot.IdKind,
-            FileSystemType = snapshot.FileSystemType,
-            VolumeSerialNumber = snapshot.VolumeSerialNumber,
-            RootId = snapshot.RootId,
-            JournalId = snapshot.JournalId,
-            NextUsn = snapshot.NextUsn,
-            IsComplete = snapshot.IsComplete,
-        };
+        var metadata = MetadataOf(snapshot);
         if (!IsCurrentVolumeCache(drive, metadata))
         {
             snapshot.Dispose();
@@ -201,6 +187,18 @@ public static class UsnIndexerCacheExtensions
         AliasProvidersReconciler.ReconcileIfStale(live, v2Path, drive);
         return (live, metadata);
     }
+
+    internal static UsnIndexer.DriveRuntimeMetadata MetadataOf(Snapshot snapshot) => new()
+    {
+        SourceKind = snapshot.SourceKind,
+        IdKind = snapshot.IdKind,
+        FileSystemType = snapshot.FileSystemType,
+        VolumeSerialNumber = snapshot.VolumeSerialNumber,
+        RootId = snapshot.RootId,
+        JournalId = snapshot.JournalId,
+        NextUsn = snapshot.NextUsn,
+        IsComplete = snapshot.IsComplete,
+    };
 
     private static bool IsCurrentVolumeCache(string drive, UsnIndexer.DriveRuntimeMetadata metadata)
     {

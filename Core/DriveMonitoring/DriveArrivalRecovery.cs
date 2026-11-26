@@ -52,6 +52,15 @@ internal static class DriveArrivalRecovery
         // still unrecovered: it is raised once below, as the plain request the monitor would have made.
         // Requests the monitor makes from here on go through on their own: the recorder is gone.
         var reindexOwed = FolderWalkRecorder.Discard(indexer, drive, buildToken);
+        // The build walked the drive but could not write or open its new index, so the drive serves the
+        // snapshot on disk again, without what the dropped index held: a journal drive with no monitor, a
+        // FAT32/exFAT drive without what its live monitor applied during the walk (OnDriveCompleted).
+        // That re-index also covers a change the live monitor flagged as missed during the walk.
+        if (indexer.ConsumeFailedHandIn(drive))
+        {
+            indexer.ConsumeMissedFolderChangeDuringRebuild(drive);
+            reindexOwed = true;
+        }
         if (IsMounted(drive))
         {
             // A Stop request reverts to "cached" (mirrors NetworkIndexer's own CancelDrive), not "failed"

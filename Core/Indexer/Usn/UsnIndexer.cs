@@ -28,6 +28,14 @@ public partial class UsnIndexer : IDisposable
     // A non-journal drive's changes seen while it was being walked, waiting for its live monitor to start --
     // see FolderWalkRecorder. Guarded by _lockObj.
     internal readonly Dictionary<string, FolderWalkRecorder> _walkRecorders = new(StringComparer.OrdinalIgnoreCase);
+    // Drives whose rebuild could not write or open its new index (UsnIndexerBuildExtensions.OnDriveCompleted):
+    // the drive serves the snapshot on disk again, without what the dropped index held, and owes a re-index.
+    // Consumed by the build's settle (DriveArrivalRecovery.SettleFailedBuild, or the startup's). Guarded by _lockObj.
+    internal readonly HashSet<string> _failedHandIns = new(StringComparer.OrdinalIgnoreCase);
+    // Drives whose index the idle compactor just dropped as unusable (CompactIdleDeltas): they serve nothing,
+    // so their rebuild skips the retry backoff once. Consumed by that request, or by any rebuild of the drive
+    // that starts first (SearchEngineDriveMaintenance). Guarded by _lockObj.
+    internal readonly HashSet<string> _droppedUnusable = new(StringComparer.OrdinalIgnoreCase);
     // Called when a folder change leaves a drive's delta big enough for CompactIdleDeltas to fold in --
     // SearchEngine arms its idle tick with it. See UsnIndexerExtensions.PublishFolderChange.
     internal Action? DeltaCompactionDue;
@@ -205,11 +213,39 @@ public partial class UsnIndexer : IDisposable
 
     private static UInt128 ToSourceLocalId(UInt128 value) => value;
 
+    // Caller holds _lockObj.
     internal void UpdateTotalsFromRuntime()
     {
-        var totals = _recordIndexes.Values.Select(r => r.GetCounts()).ToList();
+        var totals = _recordIndexes.Values.Select(CountsOf).ToList();
         Status.TotalFiles = totals.Sum(t => t.Files);
         Status.TotalDirs = totals.Sum(t => t.Dirs);
+    }
+
+    // An index a failed save left unusable (LiveIndex.Compact could not reopen any snapshot) counts as empty
+    // until it is dropped and rebuilt (CompactIdleDeltas). Every totals recompute -- another drive's change,
+    // hand-in or USN batch -- used to throw on it.
+    internal static (int Files, int Dirs) CountsOf(LiveIndex live)
+    {
+        try
+        {
+            return live.GetCounts();
+        }
+        catch (ObjectDisposedException)
+        {
+            return (0, 0);
+        }
+    }
+
+    internal bool ConsumeFailedHandIn(string drive)
+    {
+        lock (_lockObj)
+            return _failedHandIns.Remove(drive);
+    }
+
+    internal bool ConsumeDroppedUnusable(string drive)
+    {
+        lock (_lockObj)
+            return _droppedUnusable.Remove(drive);
     }
 
     // markReady:true is the authoritative "this drive is done" signal (OnDriveCompleted just swapped a
@@ -232,7 +268,7 @@ public partial class UsnIndexer : IDisposable
 
         if (_recordIndexes.TryGetValue(drive, out var live))
         {
-            var (files, dirs) = live.GetCounts();
+            var (files, dirs) = CountsOf(live);
             item.Files = files;
             item.Dirs = dirs;
         }
@@ -243,10 +279,18 @@ public partial class UsnIndexer : IDisposable
     {
         this.DisposeAllDriveMonitors();
         DiscardWalkRecorders();
-        _driveMetadata.Clear();
-        foreach (var live in _recordIndexes.Values)
+        // Removed under the lock before they are disposed, like every other drop: an idle compaction still in
+        // flight (SearchEngine's Timer does not wait for it) enumerates and drops entries under this lock, and
+        // takes a registered index that is disposed for one a failed save left unusable.
+        List<LiveIndex> indexes;
+        lock (_lockObj)
+        {
+            _driveMetadata.Clear();
+            indexes = _recordIndexes.Values.ToList();
+            _recordIndexes.Clear();
+        }
+        foreach (var live in indexes)
             live.Dispose();
-        _recordIndexes.Clear();
     }
 
     // Outside the lock, like every monitor's Dispose: it waits for a flush already in flight.

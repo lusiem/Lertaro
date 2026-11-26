@@ -210,11 +210,10 @@ public static class UsnIndexerExtensions
     // outside the lock let a live event land between the check and the change. Upgrade path: stat the paths and
     // read the subtrees outside the lock, then apply under it only what no live event has touched since (a
     // per-path version in the delta to compare against), or apply in bounded batches that each re-check.
-    internal static void ReconcileFolderPaths(this UsnIndexer indexer, string drive, IReadOnlyCollection<(string Path, bool Structural)> paths)
+    // Returns false when the drive had no usable index to reconcile into (dropped, or left unusable by a failed
+    // save), even with no paths to reconcile.
+    internal static bool ReconcileFolderPaths(this UsnIndexer indexer, string drive, IReadOnlyCollection<(string Path, bool Structural)> paths)
     {
-        if (paths.Count == 0)
-            return;
-
         var root = $"{drive}:\\";
         var changedDirectories = new List<string>();
         var pending = MutateFolderDrive(indexer, drive, delta =>
@@ -237,9 +236,11 @@ public static class UsnIndexerExtensions
                     changedDirectories.AddRange(UsnIndexerChangedDirectories.ForPath(normalized, isDirectory));
             }
         });
-        if (pending == null || changedDirectories.Count == 0)
-            return;
-        PublishFolderChange(indexer, drive, changedDirectories.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), pending.Value);
+        if (pending == null)
+            return false;
+        if (changedDirectories.Count > 0)
+            PublishFolderChange(indexer, drive, changedDirectories.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), pending.Value);
+        return true;
     }
 
     private static bool HasAncestorIn(string path, HashSet<string> directories)

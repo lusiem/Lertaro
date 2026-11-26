@@ -533,6 +533,37 @@ public sealed class FolderWalkRecorderTests
         CollectionAssert.AreEqual(new[] { drive }, requests, "a completed removal left the recording 'complete'");
     }
 
+    // A failed idle save can leave the index this walk built unusable between the swap and the hand-over, and
+    // its re-walk request is then left to this recording (RequestFolderReindex). The hand-over finds nothing to
+    // reconcile into, and must still raise that re-walk. Both shapes: the index still registered but unusable,
+    // and the index already dropped (what CompactIdleDeltas does with it now).
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void Replay_IndexUnusableAtTheHandOver_StillRaisesTheReWalkLeftToTheRecording(bool dropped)
+    {
+        using var tempDir = new TempDirectory();
+        var file = Path.Combine(tempDir.Path, "made-during-walk.txt");
+        File.WriteAllText(file, "x");
+        var (indexer, fixture) = CreateIndexer();
+        var recorder = new FolderWalkRecorder("C");
+        recorder.Monitor.Schedule(WatcherChangeTypes.Created, file);
+        FolderWalkRecorder.Keep(indexer, "C", recorder);
+        var requests = new List<string>();
+
+        if (dropped)
+            indexer._recordIndexes.Remove("C");
+        fixture.Index.Dispose(); // what LiveIndex.Compact leaves when it cannot reopen any snapshot
+        indexer.RequestFolderReindex("C", requests.Add); // CompactIdleDeltas' request
+        Assert.IsEmpty(requests, "precondition: the request was left to the recording");
+        FolderWalkRecorder.Replay(indexer, "C", CancellationToken.None, requests.Add);
+
+        CollectionAssert.AreEqual(new[] { "C" }, requests, "the re-walk left to the recording was never raised");
+        indexer._recordIndexes.Clear();
+        indexer.Dispose();
+        try { fixture.Dispose(); } catch { }
+    }
+
     // A full rebuild starts while a per-drive rebuild of the same drive is past its walk but has not handed
     // over: the newer build's recording replaces the older one's. The older build's hand-over must leave the
     // newer recording alone, and since its own stopped early, ask for the walk that recovers the gap.
@@ -600,7 +631,9 @@ public sealed class FolderWalkRecorderTests
         using var tempDir = new TempDirectory();
         var drive = tempDir.Path; // a real root, so the recorder's watcher starts and loses nothing
         using var lifetime = new CancellationTokenSource();
-        using var indexer = new UsnIndexer();
+        using var fixture = LiveIndexFixture.Build(drive, new[] { LiveIndexFixture.Root() });
+        var indexer = new UsnIndexer();
+        indexer._recordIndexes[drive] = fixture.Index; // the index the walk built
         indexer.Status.Drives.Add(new UsnIndexer.DriveIndexStatus { Drive = drive, State = "ready", Enabled = true });
         var heldWork = new List<Action>();
         var maintenance = new SearchEngineDriveMaintenance(indexer, () => new MachineSettings(),
@@ -625,6 +658,8 @@ public sealed class FolderWalkRecorderTests
         FolderWalkRecorder.Replay(indexer, drive, rebuild.Token, followUps.Add);
         indexer.RequestFolderReindex(drive, Forward); // after the hand-over: the live monitor's own again
         lifetime.Cancel();
+        indexer._recordIndexes.Clear();
+        indexer.Dispose();
 
         Assert.AreEqual(1, forwarded, "only the request after the hand-over is the monitor's own");
         Assert.HasCount(1, heldWork);

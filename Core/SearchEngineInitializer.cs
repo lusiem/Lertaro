@@ -262,8 +262,10 @@ internal class SearchEngineInitializer
                 // too if the rebuild cannot work, and parks the drive if the volume has since left.
                 Logger.Log($"[SearchEngineInitializer] Drive {drive} ended initialization with no monitor; requesting its own recovery.", LogLevel.Error);
                 // A folder walk that built nothing leaves its recorder registered for its build to settle.
-                // Nothing was left to it: no live monitor runs during initialization.
+                // Whatever was left to it (a live monitor a cancelled per-drive rebuild started before this
+                // startup's walk) is covered by the request below.
                 FolderWalkRecorder.Discard(_indexer, drive, cts.Token);
+                _indexer.ConsumeFailedHandIn(drive); // this request covers a failed hand-in too
                 RequestRebuild(drive);
             }
 
@@ -277,9 +279,13 @@ internal class SearchEngineInitializer
         catch (Exception ex)
         {
             Logger.Log($"[SearchEngineInitializer] Index initialization failed: {ex}", LogLevel.Error);
-            // A walk recorder kept for a drive whose monitor never started has nobody left to hand over to.
+            // A walk recorder kept for a drive whose monitor never started has nobody left to hand over to. A
+            // re-walk a live monitor left to it is still owed, and so is the re-index of a failed hand-in.
             foreach (var drive in supportedDrives)
-                FolderWalkRecorder.Discard(_indexer, drive, cts.Token);
+            {
+                if (FolderWalkRecorder.Discard(_indexer, drive, cts.Token) | _indexer.ConsumeFailedHandIn(drive))
+                    RequestRebuild(drive);
+            }
             var settled = ResolveStateAfterFailure(_indexer.Status.State);
             lock (_indexer.LockObj)
             {

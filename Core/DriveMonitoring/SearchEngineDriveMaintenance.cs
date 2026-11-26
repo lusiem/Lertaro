@@ -217,9 +217,11 @@ internal sealed class SearchEngineDriveMaintenance
     // building.
     internal bool QueueDriveRebuild(string drive, bool forceRebuild, bool followUpIfBusy = false)
     {
+        // Read before the lock, since it takes UsnIndexer.LockObj; only a plain follow-up request needs it.
+        var serving = forceRebuild || !followUpIfBusy || !_indexer.ConsumeDroppedUnusable(drive);
         CancellationTokenSource? cts;
         lock (_pendingDriveRebuilds)
-            cts = TryBeginRebuild(drive, forceRebuild, followUpIfBusy);
+            cts = TryBeginRebuild(drive, forceRebuild, followUpIfBusy, serving);
         if (cts == null)
             return false;
         StartRebuild(drive, forceRebuild, cts, followUpDelay: null);
@@ -231,7 +233,10 @@ internal sealed class SearchEngineDriveMaintenance
     // and the Add ran under two separate acquisitions, a request that lost the race between them fell into
     // the duplicate branch and was neither run nor recorded. Only StartRebuild, which runs outside the lock,
     // publishes state and starts the work.
-    private CancellationTokenSource? TryBeginRebuild(string drive, bool forceRebuild, bool followUpIfBusy)
+    // `serving`: false for a drive whose index the idle compactor just dropped as unusable. It serves nothing,
+    // so it is not made to wait out a backoff meant for a drive that keeps losing changes while it serves: it
+    // is walked now, superseding a waiting retry.
+    private CancellationTokenSource? TryBeginRebuild(string drive, bool forceRebuild, bool followUpIfBusy, bool serving = true)
     {
         if (_isRebuilding())
         {
@@ -257,14 +262,14 @@ internal sealed class SearchEngineDriveMaintenance
         // rebuild, a removal that failed) asks for more than that walk, so it runs now and the retry it
         // supersedes is cancelled. So does a status refresh's restore, which comes for a drive just
         // re-selected (whose index the deselection dropped) or still "pending". That drive needs its walk now.
-        if (!forceRebuild && followUpIfBusy && _delayedRebuilds.TryGetValue(drive, out var waiting) && !waiting.Retry.IsCancellationRequested)
+        if (!forceRebuild && followUpIfBusy && serving && _delayedRebuilds.TryGetValue(drive, out var waiting) && !waiting.Retry.IsCancellationRequested)
             return null;
         // A monitor's or recovery's plain request soon after the drive's last rebuild ended (within that
         // rebuild's wait) is the drive asking again, as if it had asked during the walk: it waits, and the wait
         // keeps doubling. Without this, a FAT32/exFAT drive whose live monitor overflows right after every
         // hand-over -- the walk's own recording absorbs what happens during the walk -- restarted an immediate
         // whole-drive walk every time. A full rebuild since then walked the drive afresh, so its wait is gone.
-        if (_quietUntil.Remove(drive, out var quiet) && !forceRebuild && followUpIfBusy &&
+        if (_quietUntil.Remove(drive, out var quiet) && !forceRebuild && followUpIfBusy && serving &&
             !quiet.EndedUnder.IsCancellationRequested && _time.GetUtcNow() < quiet.Until)
         {
             ScheduleDelayedRebuild(drive, quiet.Delay);
@@ -350,6 +355,9 @@ internal sealed class SearchEngineDriveMaintenance
         var nextForced = false;
         TimeSpan? nextFollowUpDelay = null;
         var handedOver = false;
+        // Any rebuild of the drive that starts after its index was dropped as unusable is the rebuild that
+        // drop asked for, so a later request does not skip the backoff for it (see TryBeginRebuild's `serving`).
+        _indexer.ConsumeDroppedUnusable(drive);
         try
         {
             cts.Token.ThrowIfCancellationRequested();
@@ -502,7 +510,7 @@ internal sealed class SearchEngineDriveMaintenance
 
                 if (_indexer._recordIndexes.TryGetValue(drive.Drive, out var live))
                 {
-                    var (files, dirs) = live.GetCounts();
+                    var (files, dirs) = UsnIndexer.CountsOf(live);
                     drive.Files = files;
                     drive.Dirs = dirs;
                     totalFiles += files;

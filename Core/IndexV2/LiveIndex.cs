@@ -183,7 +183,14 @@ public sealed class LiveIndex : IDisposable
 
     public void Dispose()
     {
-        _lock.EnterWriteLock();
+        try
+        {
+            _lock.EnterWriteLock();
+        }
+        catch (ObjectDisposedException)
+        {
+            return; // disposed already: a second Dispose must not throw either, see below
+        }
         try
         {
             _snapshot?.Dispose();

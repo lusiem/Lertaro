@@ -211,7 +211,15 @@ internal sealed class FolderWalkRecorder : IDisposable
 
         try
         {
-            indexer.ReconcileFolderPaths(drive, paths.Values);
+            // No usable index to reconcile into, and a re-walk left to this recording: a failed idle save
+            // dropped the index this walk built and asked for it (CompactIdleDeltas). Read without the lock:
+            // Take removed this recorder from _walkRecorders under it, and only that entry is ever deferred
+            // to. An index dropped on purpose since the swap (a removal, a deselection) asked for nothing.
+            if (!indexer.ReconcileFolderPaths(drive, paths.Values) && recorder._reindexDeferred)
+            {
+                Logger.Log($"[FolderWalkRecorder] Drive {drive}: the index this walk built is no longer there to hand over to; requesting a re-walk.", LogLevel.Warn);
+                lost = true;
+            }
         }
         catch (Exception ex)
         {

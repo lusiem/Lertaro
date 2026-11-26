@@ -73,9 +73,8 @@ internal static class IndexBuilder
                 setDriveState(drive, "indexing");
 
                 var progress = (int)(((double)(i + 1) / drives.Count) * 100);
-                onDriveCompleted(drive, data, progress, i + 1);
-
-                monitorsToStart.Add((drive, data.JournalId, data.NextUsn));
+                if (TryHandIn(drive, () => onDriveCompleted(drive, data, progress, i + 1)))
+                    monitorsToStart.Add((drive, data.JournalId, data.NextUsn));
             }
             else if (folderResults[i].Result != null)
             {
@@ -84,8 +83,8 @@ internal static class IndexBuilder
                 setDriveState(drive, "indexing");
 
                 var progress = (int)(((double)(i + 1) / drives.Count) * 100);
-                onFolderDriveCompleted(drive, result, progress, i + 1);
-                monitorsToStart.Add((drive, 0, 0));
+                if (TryHandIn(drive, () => onFolderDriveCompleted(drive, result, progress, i + 1)))
+                    monitorsToStart.Add((drive, 0, 0));
             }
             else if (cancelled[i])
             {
@@ -102,5 +101,21 @@ internal static class IndexBuilder
         onCompleted(stopWatch.Elapsed.TotalSeconds);
 
         return monitorsToStart;
+    }
+
+    // A drive whose hand-in throws (its new index could not be written) is reported as failed, with no
+    // monitor, like a scan that failed. Escaping, it stopped every later drive's hand-in as well.
+    private static bool TryHandIn(string drive, Action handIn)
+    {
+        try
+        {
+            handIn();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[UsnIndexer] Drive {drive} indexing failed: its new index could not be handed in. {ex.Message}", LogLevel.Error);
+            return false;
+        }
     }
 }
