@@ -17,7 +17,7 @@ public sealed class FolderWalkRecorderTests
     [TestMethod]
     public void Stop_ReturnsChangesTheDebounceHadNotDeliveredYet_AndIgnoresLaterOnes()
     {
-        using var recorder = new FolderWalkRecorder("Q");
+        using var recorder = new FolderWalkRecorder("Q", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, @"Q:\new.txt");
         recorder.Monitor.Schedule(WatcherChangeTypes.Renamed, @"Q:\b", @"Q:\a");
 
@@ -46,7 +46,7 @@ public sealed class FolderWalkRecorderTests
         var indexer = new UsnIndexer();
         indexer._recordIndexes["C"] = fixture.Index;
         indexer.Status.Drives.Add(new UsnIndexer.DriveIndexStatus { Drive = "C", State = "ready" });
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, filePath);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
         var reindexRequests = 0;
@@ -67,7 +67,7 @@ public sealed class FolderWalkRecorderTests
     public void Replay_RecorderThatLostEvents_RequestsAReindex()
     {
         using var indexer = new UsnIndexer();
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.MarkLost();
         FolderWalkRecorder.Keep(indexer, "C", recorder);
         var requested = new List<string>();
@@ -86,7 +86,7 @@ public sealed class FolderWalkRecorderTests
         using var tempDir = new TempDirectory();
         var file = Path.Combine(tempDir.Path, "x.txt");
         var (indexer, fixture) = CreateIndexer();
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Deleted, file);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
         File.WriteAllText(file, "back");
@@ -105,7 +105,7 @@ public sealed class FolderWalkRecorderTests
         using var tempDir = new TempDirectory();
         var file = Path.Combine(tempDir.Path, "x.txt");
         var (indexer, fixture) = CreateIndexer();
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, file);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
 
@@ -127,7 +127,7 @@ public sealed class FolderWalkRecorderTests
         var (indexer, fixture) = CreateIndexer();
         indexer.ApplyFolderChange("C", WatcherChangeTypes.Created, oldDir); // what the walk captured
         Directory.Move(oldDir, newDir);
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Renamed, newDir, oldDir);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
 
@@ -154,7 +154,7 @@ public sealed class FolderWalkRecorderTests
         fixture.Index.Compact(fixture.Path, force: true);                // ...as the built base snapshot
         var added = Path.Combine(big, "new.txt");
         File.WriteAllText(added, "");
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, added);
         recorder.Monitor.Schedule(WatcherChangeTypes.Changed, big);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
@@ -182,7 +182,7 @@ public sealed class FolderWalkRecorderTests
         fixture.Index.Compact(fixture.Path, force: true);
         Directory.Move(p, pOld);
         Directory.CreateDirectory(p);
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Renamed, pOld, p);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, p);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
@@ -209,7 +209,7 @@ public sealed class FolderWalkRecorderTests
         fixture.Index.Compact(fixture.Path, force: true);
         Directory.Move(a, away);
         File.WriteAllText(a, "now a file");
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Renamed, away, a);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, a);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
@@ -229,7 +229,7 @@ public sealed class FolderWalkRecorderTests
         using var tempDir = new TempDirectory();
         var x = Path.Combine(tempDir.Path, "x.txt");
         var (indexer, fixture) = CreateIndexer();
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Deleted, x); // the walk saw x go
         FolderWalkRecorder.Keep(indexer, "C", recorder);
         // Replay runs on a thread of its own, so its state says when it blocks. Nothing it does before taking
@@ -269,7 +269,7 @@ public sealed class FolderWalkRecorderTests
         indexer.ApplyFolderChange("C", WatcherChangeTypes.Created, lower);
         fixture.Index.Compact(fixture.Path, force: true);
         File.Move(lower, upper);
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Renamed, upper, lower);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
 
@@ -289,7 +289,7 @@ public sealed class FolderWalkRecorderTests
     {
         using var tempDir = new TempDirectory();
         var (indexer, fixture) = CreateIndexer();
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, Path.Combine(tempDir.Path, "x.txt"));
         FolderWalkRecorder.Keep(indexer, "C", recorder);
         var requested = new List<string>();
@@ -319,7 +319,7 @@ public sealed class FolderWalkRecorderTests
         });
         var signals = 0;
         indexer.DeltaCompactionDue = () => signals++;
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, file);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
 
@@ -336,7 +336,7 @@ public sealed class FolderWalkRecorderTests
     {
         using var indexer = new UsnIndexer();
         indexer.Status.Drives.Add(new UsnIndexer.DriveIndexStatus { Drive = "C", State = "indexing" });
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
 
         DriveArrivalRecovery.SettleFailedBuild(indexer, "C", wasCancelled: false, CancellationToken.None, CancellationToken.None, null, null);
@@ -356,7 +356,7 @@ public sealed class FolderWalkRecorderTests
     {
         Assert.IsFalse(Directory.Exists(@"Q:\"), "precondition: Q: must not be mounted");
         var indexer = new UsnIndexer();
-        FolderWalkRecorder.Keep(indexer, "Q", new FolderWalkRecorder("Q"));
+        FolderWalkRecorder.Keep(indexer, "Q", new FolderWalkRecorder("Q", CancellationToken.None));
         using var cts = new CancellationTokenSource();
 
         DriveMonitorFactory.EnsureMonitor(indexer, "Q", 0, 0, cts.Token, CancellationToken.None, null);
@@ -408,7 +408,7 @@ public sealed class FolderWalkRecorderTests
         var status = indexer.Status.Drives.Single(d => d.Drive == "C");
         status.State = "indexing";
         indexer.ApplyFolderChange("C", WatcherChangeTypes.Created, file); // the old monitor, mid-rebuild
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, file);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
         status.State = "ready";
@@ -546,7 +546,7 @@ public sealed class FolderWalkRecorderTests
         var file = Path.Combine(tempDir.Path, "made-during-walk.txt");
         File.WriteAllText(file, "x");
         var (indexer, fixture) = CreateIndexer();
-        var recorder = new FolderWalkRecorder("C");
+        var recorder = new FolderWalkRecorder("C", CancellationToken.None);
         recorder.Monitor.Schedule(WatcherChangeTypes.Created, file);
         FolderWalkRecorder.Keep(indexer, "C", recorder);
         var requests = new List<string>();

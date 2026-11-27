@@ -25,7 +25,7 @@ internal sealed class FolderWalkRecorder : IDisposable
     // `token` is the build's own: the per-drive rebuild's, or the startup initialization's -- NOT a walk's
     // DriveIndexRemovalScope token, whose source is disposed (and so unlinked from the build's) as soon as
     // that drive's walk ends. It identifies the build (see Take) and releases the recorder when cancelled.
-    public FolderWalkRecorder(string drive, CancellationToken token = default)
+    public FolderWalkRecorder(string drive, CancellationToken token)
     {
         Owner = token;
         Monitor = new FolderDriveMonitor(drive, (type, path, oldPath) =>
